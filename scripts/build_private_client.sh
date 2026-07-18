@@ -27,9 +27,21 @@ API_KEY_PATH="$RUNNER_TEMP_ROOT/AuthKey_${APPLE_API_KEY_ID:-missing}.p8"
 ORIGINAL_KEYCHAINS_FILE="$RUNNER_TEMP_ROOT/agentrouter-original-keychains.txt"
 ORIGINAL_DEFAULT_KEYCHAIN=""
 SIGNING_MATERIAL_PREPARED=0
+UPDATER_KEY_PROBE_ROOT=""
 
 cleanup_signing_material() {
   local status=$?
+  unset TAURI_SIGNING_PRIVATE_KEY TAURI_SIGNING_PRIVATE_KEY_PASSWORD
+  if [[ -n "$UPDATER_KEY_PROBE_ROOT" ]]; then
+    case "$UPDATER_KEY_PROBE_ROOT" in
+      "$RUNNER_TEMP_ROOT"/agentrouter-updater-key-probe.*)
+        rm -rf "$UPDATER_KEY_PROBE_ROOT"
+        ;;
+      *)
+        echo "refusing to remove unsafe updater key probe path" >&2
+        ;;
+    esac
+  fi
   if [[ "$SIGNING_MATERIAL_PREPARED" -eq 1 ]]; then
     if [[ -n "$ORIGINAL_DEFAULT_KEYCHAIN" ]]; then
       security default-keychain -d user -s "$ORIGINAL_DEFAULT_KEYCHAIN" 2>/dev/null || true
@@ -193,6 +205,25 @@ PYTHON_SHIM_ROOT="$RUNNER_TEMP_ROOT/agentrouter-python-shim"
 mkdir -p "$PYTHON_SHIM_ROOT"
 ln -sf "$(command -v python3)" "$PYTHON_SHIM_ROOT/python"
 export PATH="$PYTHON_SHIM_ROOT:$PATH"
+
+UPDATER_PREFLIGHT_KEY_ID=""
+if [[ "$PACKAGING_MODE" == "production-release" ]]; then
+  UPDATER_KEY_PROBE_ROOT="$(mktemp -d "$RUNNER_TEMP_ROOT/agentrouter-updater-key-probe.XXXXXX")"
+  UPDATER_KEY_PROBE_INPUT="$UPDATER_KEY_PROBE_ROOT/probe.bin"
+  printf '%s' 'AgentRouter updater signing key identity probe' > "$UPDATER_KEY_PROBE_INPUT"
+
+  export TAURI_SIGNING_PRIVATE_KEY="$UPDATER_PRIVATE_KEY_VALUE"
+  export TAURI_SIGNING_PRIVATE_KEY_PASSWORD="$UPDATER_PRIVATE_KEY_PASSWORD_VALUE"
+  npm run --silent tauri -- signer sign "$UPDATER_KEY_PROBE_INPUT" >/dev/null
+  unset TAURI_SIGNING_PRIVATE_KEY TAURI_SIGNING_PRIVATE_KEY_PASSWORD
+
+  UPDATER_PREFLIGHT_KEY_ID="$(python3 "$SCRIPT_ROOT/verify_tauri_updater_key.py" \
+    --config "$SOURCE_ROOT/src-tauri/tauri.conf.json" \
+    --signature "$UPDATER_KEY_PROBE_INPUT.sig")"
+  rm -rf "$UPDATER_KEY_PROBE_ROOT"
+  UPDATER_KEY_PROBE_ROOT=""
+  echo "updater_preflight_key_id=$UPDATER_PREFLIGHT_KEY_ID"
+fi
 
 TAURI_OVERRIDE="$RUNNER_TEMP_ROOT/agentrouter-tauri-$PACKAGING_MODE.json"
 SIGNING_AUTHORITY=""
