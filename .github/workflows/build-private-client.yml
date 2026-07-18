@@ -1,0 +1,145 @@
+name: Build private AgentRouter macOS client
+
+on:
+  workflow_dispatch:
+    inputs:
+      source_sha:
+        description: Immutable 40-character commit from the private Client repository
+        required: true
+        type: string
+        default: b1b36f90247bec7a3dfb0de597d377d1d2112997
+      client_version:
+        description: Expected package version at the selected commit
+        required: true
+        type: string
+        default: 0.1.91
+
+permissions:
+  contents: read
+
+concurrency:
+  group: macos-private-client-${{ inputs.source_sha }}
+  cancel-in-progress: false
+
+jobs:
+  build:
+    runs-on: macos-14
+    timeout-minutes: 90
+    env:
+      SOURCE_REPOSITORY: Maybank01/agentrouter-client-packaging
+      SOURCE_PATH: private-client
+      PRIVATE_OUTPUT_ROOT: artifacts/private
+      PUBLIC_OUTPUT_ROOT: public-artifacts
+
+    steps:
+      - name: Checkout build shell
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
+        with:
+          persist-credentials: false
+
+      - name: Validate immutable inputs
+        shell: bash
+        env:
+          SOURCE_SHA: ${{ inputs.source_sha }}
+          CLIENT_VERSION: ${{ inputs.client_version }}
+        run: |
+          set -euo pipefail
+          [[ "$SOURCE_SHA" =~ ^[0-9a-f]{40}$ ]]
+          [[ "$CLIENT_VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]
+
+      - name: Checkout private Client source
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
+        with:
+          repository: Maybank01/agentrouter-client-packaging
+          ref: ${{ inputs.source_sha }}
+          path: private-client
+          ssh-key: ${{ secrets.PRIVATE_SOURCE_SSH_KEY }}
+          persist-credentials: false
+          fetch-depth: 1
+
+      - name: Verify private checkout identity
+        shell: bash
+        env:
+          SOURCE_SHA: ${{ inputs.source_sha }}
+        run: |
+          set -euo pipefail
+          ACTUAL_SHA="$(git -C "$SOURCE_PATH" rev-parse HEAD)"
+          test "$ACTUAL_SHA" = "$SOURCE_SHA"
+          git -C "$SOURCE_PATH" remote set-url origin disabled-private-origin
+
+      - name: Show runner environment
+        shell: bash
+        run: |
+          sw_vers
+          xcodebuild -version
+          uname -a
+
+      - name: Setup Node
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: private-client/package-lock.json
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@4cda84d5c5c54efe2404f9d843567869ab1699d4
+        with:
+          targets: aarch64-apple-darwin,x86_64-apple-darwin
+
+      - name: Build private source without printing private compiler logs
+        id: private_build
+        shell: bash
+        env:
+          SOURCE_SHA: ${{ inputs.source_sha }}
+          CLIENT_VERSION: ${{ inputs.client_version }}
+        run: |
+          set -u
+          mkdir -p "$PRIVATE_OUTPUT_ROOT"
+          set +e
+          bash scripts/build_private_client.sh \
+            "$SOURCE_PATH" \
+            "$PRIVATE_OUTPUT_ROOT" \
+            "$SOURCE_SHA" \
+            "$CLIENT_VERSION" \
+            > "$PRIVATE_OUTPUT_ROOT/build.log" 2>&1
+          BUILD_STATUS=$?
+          set -e
+          echo "status=$BUILD_STATUS" >> "$GITHUB_OUTPUT"
+          if [[ "$BUILD_STATUS" -eq 0 ]]; then
+            echo "Private Client build completed; output will be uploaded only in encrypted form."
+          else
+            echo "::error::Private Client build failed with exit code $BUILD_STATUS. Download and decrypt the evidence artifact for the private log."
+          fi
+
+      - name: Encrypt private build output
+        if: always()
+        shell: bash
+        env:
+          ARTIFACT_ENCRYPTION_KEY: ${{ secrets.ARTIFACT_ENCRYPTION_KEY }}
+          SOURCE_SHA: ${{ inputs.source_sha }}
+          CLIENT_VERSION: ${{ inputs.client_version }}
+          BUILD_STATUS: ${{ steps.private_build.outputs.status || '255' }}
+        run: |
+          bash scripts/encrypt_private_artifact.sh \
+            "$PRIVATE_OUTPUT_ROOT" \
+            "$PUBLIC_OUTPUT_ROOT" \
+            "$SOURCE_SHA" \
+            "$CLIENT_VERSION" \
+            "$BUILD_STATUS" \
+            "$GITHUB_RUN_ID"
+
+      - name: Upload encrypted evidence only
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: agentrouter-macos-private-${{ inputs.client_version }}-${{ github.run_id }}
+          if-no-files-found: error
+          retention-days: 1
+          path: public-artifacts/
+
+      - name: Enforce build result
+        if: always()
+        shell: bash
+        env:
+          BUILD_STATUS: ${{ steps.private_build.outputs.status || '255' }}
+        run: test "$BUILD_STATUS" -eq 0
