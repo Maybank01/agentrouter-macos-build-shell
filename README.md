@@ -1,12 +1,19 @@
 # AgentRouter macOS Build Shell
 
-This repository is a public CI carrier. It contains no AgentRouter Client product source and no runtime artifacts.
+This repository is a public CI carrier. It contains no AgentRouter Client product source, signing material, Codex Runtime, or decrypted release artifacts.
 
-The manually dispatched workflow checks out one immutable commit from the private AgentRouter Client repository with a read-only deploy key, builds a universal macOS application on a GitHub-hosted runner, creates a DMG, and uploads only an encrypted evidence archive.
+The manually dispatched workflow checks out one immutable commit from the private Client repository with a read-only deploy key and offers two explicit channels:
 
-Required repository secrets:
+- `unsigned-probe`: builds a universal Apple Silicon + Intel app and an unsigned DMG for internal compilation checks.
+- `production-release`: builds a universal app, signs it with Developer ID Application, notarizes and staples it, generates a Tauri-signed updater archive, then signs, notarizes, staples, and Gatekeeper-checks the DMG.
+
+All private compiler logs and output files are encrypted before the public workflow uploads them. GitHub artifact retention is one day. Nothing in this repository publishes a Client release or changes an update-channel pointer.
+
+Repository secrets:
 
 - `PRIVATE_SOURCE_SSH_KEY`: read-only deploy key for `Maybank01/agentrouter-client-packaging`.
-- `ARTIFACT_ENCRYPTION_KEY`: one-time high-entropy key used to encrypt the private build output before upload.
+- `ARTIFACT_ENCRYPTION_KEY`: high-entropy key used to encrypt all private output before upload.
+
+Apple and Tauri signing secrets belong only to the protected `production-signing` GitHub Environment. See [the release runbook](docs/macos-release-runbook.md) for the secret contract, dispatch command, evidence gates, and cleanup procedure.
 
 The shell intentionally has no license. Public visibility is used only to host the runner definition; it does not grant reuse rights to AgentRouter product code.

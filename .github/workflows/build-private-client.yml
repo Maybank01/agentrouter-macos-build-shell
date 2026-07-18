@@ -3,6 +3,14 @@ name: Build private AgentRouter macOS client
 on:
   workflow_dispatch:
     inputs:
+      mode:
+        description: Build channel
+        required: true
+        type: choice
+        default: unsigned-probe
+        options:
+          - unsigned-probe
+          - production-release
       source_sha:
         description: Immutable 40-character commit from the private Client repository
         required: true
@@ -18,36 +26,55 @@ permissions:
   contents: read
 
 concurrency:
-  group: macos-private-client-${{ inputs.source_sha }}
+  group: macos-private-client-${{ inputs.mode }}-${{ inputs.source_sha }}
   cancel-in-progress: false
 
 jobs:
   build:
+    name: ${{ inputs.mode }} / ${{ inputs.client_version }} / ${{ inputs.source_sha }}
     runs-on: macos-14
-    timeout-minutes: 90
+    timeout-minutes: 120
+    environment:
+      name: ${{ inputs.mode == 'production-release' && 'production-signing' || 'unsigned-probe' }}
     env:
-      SOURCE_REPOSITORY: Maybank01/agentrouter-client-packaging
+      PACKAGING_MODE: ${{ inputs.mode }}
       SOURCE_PATH: private-client
       PRIVATE_OUTPUT_ROOT: artifacts/private
       PUBLIC_OUTPUT_ROOT: public-artifacts
 
     steps:
-      - name: Checkout build shell
+      - name: Checkout immutable build shell
         uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
         with:
           persist-credentials: false
 
-      - name: Validate immutable inputs
+      - name: Validate immutable inputs and carrier identity
         shell: bash
         env:
           SOURCE_SHA: ${{ inputs.source_sha }}
           CLIENT_VERSION: ${{ inputs.client_version }}
         run: |
           set -euo pipefail
+          [[ "$PACKAGING_MODE" == "unsigned-probe" || "$PACKAGING_MODE" == "production-release" ]]
           [[ "$SOURCE_SHA" =~ ^[0-9a-f]{40}$ ]]
           [[ "$CLIENT_VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]
+          test "$(git rev-parse HEAD)" = "$GITHUB_SHA"
+          test "$GITHUB_REPOSITORY" = "Maybank01/agentrouter-macos-build-shell"
 
-      - name: Checkout private Client source
+      - name: Preflight protected production credentials
+        if: ${{ inputs.mode == 'production-release' }}
+        shell: bash
+        env:
+          APPLE_CERTIFICATE_BASE64: ${{ secrets.APPLE_CERTIFICATE }}
+          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+          APPLE_API_PRIVATE_KEY_BASE64: ${{ secrets.APPLE_API_KEY }}
+          APPLE_API_KEY_ID: ${{ secrets.APPLE_API_KEY_ID }}
+          APPLE_API_ISSUER: ${{ secrets.APPLE_API_ISSUER }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+        run: bash scripts/preflight_production_signing.sh
+
+      - name: Checkout exact private Client source
         uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
         with:
           repository: Maybank01/agentrouter-client-packaging
@@ -57,7 +84,7 @@ jobs:
           persist-credentials: false
           fetch-depth: 1
 
-      - name: Verify private checkout identity
+      - name: Verify private checkout identity and remove remote
         shell: bash
         env:
           SOURCE_SHA: ${{ inputs.source_sha }}
@@ -67,7 +94,7 @@ jobs:
           test "$ACTUAL_SHA" = "$SOURCE_SHA"
           git -C "$SOURCE_PATH" remote set-url origin disabled-private-origin
 
-      - name: Show runner environment
+      - name: Show public runner environment
         shell: bash
         run: |
           sw_vers
@@ -81,7 +108,7 @@ jobs:
           cache: npm
           cache-dependency-path: private-client/package-lock.json
 
-      - name: Setup Rust
+      - name: Setup Rust universal targets
         uses: dtolnay/rust-toolchain@4cda84d5c5c54efe2404f9d843567869ab1699d4
         with:
           targets: aarch64-apple-darwin,x86_64-apple-darwin
@@ -92,6 +119,14 @@ jobs:
         env:
           SOURCE_SHA: ${{ inputs.source_sha }}
           CLIENT_VERSION: ${{ inputs.client_version }}
+          APPLE_CERTIFICATE_BASE64: ${{ secrets.APPLE_CERTIFICATE }}
+          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+          APPLE_API_PRIVATE_KEY_BASE64: ${{ secrets.APPLE_API_KEY }}
+          APPLE_API_KEY_ID: ${{ secrets.APPLE_API_KEY_ID }}
+          APPLE_API_ISSUER: ${{ secrets.APPLE_API_ISSUER }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
         run: |
           set -u
           mkdir -p "$PRIVATE_OUTPUT_ROOT"
@@ -101,15 +136,25 @@ jobs:
             "$PRIVATE_OUTPUT_ROOT" \
             "$SOURCE_SHA" \
             "$CLIENT_VERSION" \
+            "$PACKAGING_MODE" \
+            "$GITHUB_SHA" \
             > "$PRIVATE_OUTPUT_ROOT/build.log" 2>&1
           BUILD_STATUS=$?
           set -e
           echo "status=$BUILD_STATUS" >> "$GITHUB_OUTPUT"
           if [[ "$BUILD_STATUS" -eq 0 ]]; then
-            echo "Private Client build completed; output will be uploaded only in encrypted form."
+            echo "Private Client $PACKAGING_MODE completed; output will be uploaded only in encrypted form."
           else
-            echo "::error::Private Client build failed with exit code $BUILD_STATUS. Download and decrypt the evidence artifact for the private log."
+            echo "::error::Private Client $PACKAGING_MODE failed with exit code $BUILD_STATUS. Download and decrypt the evidence artifact for the private log."
           fi
+
+      - name: Remove temporary production signing material
+        if: ${{ always() && inputs.mode == 'production-release' }}
+        shell: bash
+        run: |
+          security delete-keychain "$RUNNER_TEMP/agentrouter-client-build.keychain-db" 2>/dev/null || true
+          rm -f "$RUNNER_TEMP/developer-id.p12"
+          rm -f "$RUNNER_TEMP"/AuthKey_*.p8
 
       - name: Encrypt private build output
         if: always()
@@ -125,19 +170,21 @@ jobs:
             "$PUBLIC_OUTPUT_ROOT" \
             "$SOURCE_SHA" \
             "$CLIENT_VERSION" \
+            "$PACKAGING_MODE" \
             "$BUILD_STATUS" \
-            "$GITHUB_RUN_ID"
+            "$GITHUB_RUN_ID" \
+            "$GITHUB_SHA"
 
       - name: Upload encrypted evidence only
         if: always()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with:
-          name: agentrouter-macos-private-${{ inputs.client_version }}-${{ github.run_id }}
+          name: agentrouter-macos-${{ inputs.mode }}-${{ inputs.client_version }}-${{ github.run_id }}
           if-no-files-found: error
           retention-days: 1
           path: public-artifacts/
 
-      - name: Enforce build result
+      - name: Enforce pipeline result
         if: always()
         shell: bash
         env:
