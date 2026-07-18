@@ -44,7 +44,7 @@ jobs:
 
     steps:
       - name: Checkout immutable build shell
-        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
         with:
           persist-credentials: false
 
@@ -75,7 +75,7 @@ jobs:
         run: bash scripts/preflight_production_signing.sh
 
       - name: Checkout exact private Client source
-        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
         with:
           repository: Maybank01/agentrouter-client-packaging
           ref: ${{ inputs.source_sha }}
@@ -102,14 +102,14 @@ jobs:
           uname -a
 
       - name: Setup Node
-        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
           node-version: "22"
           cache: npm
           cache-dependency-path: private-client/package-lock.json
 
       - name: Setup Rust universal targets
-        uses: dtolnay/rust-toolchain@4cda84d5c5c54efe2404f9d843567869ab1699d4
+        uses: dtolnay/rust-toolchain@4cda84d5c5c54efe2404f9d843567869ab1699d4 # stable
         with:
           targets: aarch64-apple-darwin,x86_64-apple-darwin
 
@@ -177,7 +177,7 @@ jobs:
 
       - name: Upload encrypted evidence only
         if: always()
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: agentrouter-macos-${{ inputs.mode }}-${{ inputs.client_version }}-${{ github.run_id }}
           if-no-files-found: error
