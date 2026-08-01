@@ -28,7 +28,11 @@ fi
 
 mkdir -p "$PRIVATE_ROOT" "$PUBLIC_ROOT"
 PYTHON_BIN="$(command -v python3 || command -v python)"
-ARCHIVE_PATH="${RUNNER_TEMP:-/tmp}/agentrouter-v2-${PLATFORM}-${ARCH}-${RUN_ID}.tar.gz"
+# Keep the temporary archive under the relative public-output root.  Git Bash
+# interprets a raw `D:\\...` RUNNER_TEMP as an rsync-style host path when it is
+# handed to tar, so using the workspace-relative path is portable on both
+# Windows and macOS runners.
+ARCHIVE_PATH="$PUBLIC_ROOT/.agentrouter-v2-${PLATFORM}-${ARCH}-${RUN_ID}.tar.gz"
 ENCRYPTED_NAME="AgentRouterV2_${CLIENT_VERSION}_${PLATFORM}_${ARCH}_${PACKAGING_MODE}_${SOURCE_SHA:0:12}_${RUN_ID}.tar.gz.enc"
 ENCRYPTED_PATH="$PUBLIC_ROOT/$ENCRYPTED_NAME"
 
