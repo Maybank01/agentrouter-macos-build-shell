@@ -15,6 +15,10 @@ version embedded.  The private source checkout uses the read-only deploy key,
 disables its origin after exact-SHA verification, and never enters an uploaded
 artifact.
 
+The manual `target` input defaults to `all`; `windows` and `macos` exist only
+for scoped retries so one failed platform never spends minutes rebuilding a
+platform whose encrypted receipt is already accepted.
+
 ## Modes
 
 - `unsigned-probe` proves compilation, architecture, package shape, DMG

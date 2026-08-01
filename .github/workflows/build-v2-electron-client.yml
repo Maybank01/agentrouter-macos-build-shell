@@ -19,6 +19,15 @@ on:
         description: Expected V0.2 Client version
         required: true
         type: string
+      target:
+        description: Target set (use a single platform for a scoped retry)
+        required: true
+        type: choice
+        default: all
+        options:
+          - all
+          - windows
+          - macos
 
 permissions:
   contents: read
@@ -58,6 +67,7 @@ jobs:
   windows:
     name: Windows x64 / ${{ inputs.mode }}
     needs: preflight
+    if: ${{ inputs.target == 'all' || inputs.target == 'windows' }}
     runs-on: windows-latest
     timeout-minutes: 120
     env:
@@ -130,6 +140,7 @@ jobs:
   macos:
     name: macOS ${{ matrix.arch }} / ${{ inputs.mode }}
     needs: preflight
+    if: ${{ inputs.target == 'all' || inputs.target == 'macos' }}
     strategy:
       fail-fast: false
       matrix:
