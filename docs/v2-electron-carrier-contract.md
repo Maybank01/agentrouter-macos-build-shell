@@ -17,7 +17,7 @@ artifact.
 
 The manual `target` input defaults to `all`; `windows` and `macos` exist only
 for scoped retries so one failed platform never spends minutes rebuilding a
-platform whose encrypted receipt is already accepted.
+platform whose public candidate receipt is already accepted.
 
 ## Modes
 
@@ -33,9 +33,21 @@ replacement for the sealed production build.
 
 ## Artifact boundary
 
-The public workflow uploads only an AES-256-CBC encrypted archive and a public
-encrypted-artifact receipt.  The encrypted archive contains package artifacts,
-the platform build receipt and private build log.  Retention is one day.
+On a successful build, the public workflow uploads only the customer-facing
+release files named in `build-receipt.json`, the validated build receipt, and a
+binding `carrier-artifact-receipt.json`. The exporter rejects path traversal,
+symlinks, missing required files, unexpected filenames, hash/size drift,
+identity drift and incomplete platform trust gates. The allow-list is:
+
+- Windows: NSIS installer, matching blockmap and `latest.yml`.
+- macOS: architecture-specific DMG, ZIP, update manifest and optional matching
+  DMG/ZIP blockmaps.
+
+Private source, compiler logs, intermediate output, unpacked apps, credentials,
+signing material and raw diagnostics are never uploaded. Failed builds upload
+only a sanitized diagnostic receipt containing an allow-listed phase/signal
+classification and the private log hash. V0.2 has no artifact-encryption or
+downstream decryption dependency. Retention is one day.
 
 No workflow publishes GitHub Releases, Client feeds, Runtime manifests,
 Cloudflare objects or production pointers.  Promotion must reuse verified

@@ -116,20 +116,28 @@ jobs:
             --arch x64 `
             --mode "${{ inputs.mode }}" `
             --carrier-sha "$env:GITHUB_SHA" *> "$env:PRIVATE_OUTPUT_ROOT/build.log"
-      - name: Encrypt Windows evidence
+      - name: Export public Windows candidate
+        id: export
         if: always()
-        shell: bash
+        shell: pwsh
         env:
-          ARTIFACT_ENCRYPTION_KEY: ${{ secrets.ARTIFACT_ENCRYPTION_KEY }}
           BUILD_STATUS: ${{ steps.build.outcome == 'success' && '0' || '1' }}
         run: |
-          bash scripts/encrypt_v2_artifact.sh \
-            "$PRIVATE_OUTPUT_ROOT" "$PUBLIC_OUTPUT_ROOT" \
-            "${{ needs.preflight.outputs.source_sha }}" \
-            "${{ needs.preflight.outputs.client_version }}" \
-            "${{ inputs.mode }}" "$BUILD_STATUS" "$GITHUB_RUN_ID" "$GITHUB_SHA" windows x64
-      - name: Upload encrypted Windows evidence
+          python scripts/export_v2_public_artifact.py `
+            "$env:PRIVATE_OUTPUT_ROOT" "$env:PUBLIC_OUTPUT_ROOT" `
+            "${{ needs.preflight.outputs.source_sha }}" `
+            "${{ needs.preflight.outputs.client_version }}" `
+            "${{ inputs.mode }}" "$env:BUILD_STATUS" "$env:GITHUB_RUN_ID" "$env:GITHUB_SHA" windows x64
+      - name: Upload safe Windows diagnostic receipt
         if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: agentrouter-v2-windows-x64-diagnostic-${{ github.run_id }}
+          if-no-files-found: error
+          retention-days: 1
+          path: public-artifacts/carrier-artifact-receipt.json
+      - name: Upload public Windows candidate
+        if: ${{ steps.build.outcome == 'success' && steps.export.outcome == 'success' }}
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         with:
           name: agentrouter-v2-windows-x64-${{ inputs.mode }}-${{ github.run_id }}
@@ -211,14 +219,14 @@ jobs:
         if: ${{ always() && inputs.mode == 'production-release' }}
         shell: bash
         run: bash scripts/cleanup_v2_electron_signing.sh
-      - name: Encrypt macOS evidence
+      - name: Export public macOS candidate
+        id: export
         if: always()
         shell: bash
         env:
-          ARTIFACT_ENCRYPTION_KEY: ${{ secrets.ARTIFACT_ENCRYPTION_KEY }}
           BUILD_STATUS: ${{ steps.build.outcome == 'success' && '0' || '1' }}
         run: |
-          bash scripts/encrypt_v2_artifact.sh \
+          python3 scripts/export_v2_public_artifact.py \
             "$PRIVATE_OUTPUT_ROOT" "$PUBLIC_OUTPUT_ROOT" \
             "${{ needs.preflight.outputs.source_sha }}" \
             "${{ needs.preflight.outputs.client_version }}" \
@@ -230,9 +238,9 @@ jobs:
           name: agentrouter-v2-macos-${{ matrix.arch }}-diagnostic-${{ github.run_id }}
           if-no-files-found: error
           retention-days: 1
-          path: public-artifacts/encrypted-artifact-receipt.json
-      - name: Upload encrypted macOS evidence
-        if: always()
+          path: public-artifacts/carrier-artifact-receipt.json
+      - name: Upload public macOS candidate
+        if: ${{ steps.build.outcome == 'success' && steps.export.outcome == 'success' }}
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         with:
           name: agentrouter-v2-macos-${{ matrix.arch }}-${{ inputs.mode }}-${{ github.run_id }}
