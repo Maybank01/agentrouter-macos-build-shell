@@ -178,9 +178,22 @@ if int(build_status) != 0 and build_log_file.is_file():
         safe_line = sanitize_error_line(line)
         if safe_line and safe_line not in summaries:
             summaries.append(safe_line)
-        if len(summaries) == 2:
+        if len(summaries) == 8:
             break
     summaries.reverse()
+    safe_tail: list[str] = []
+    wrapper_line_re = re.compile(
+        r"(?i)(^Traceback \(|^\s*File \"|CalledProcessError|returned non-zero exit status|^Exit status)"
+    )
+    for line in reversed(log_text.splitlines()):
+        safe_line = sanitize_error_line(line)
+        if not safe_line or wrapper_line_re.search(safe_line):
+            continue
+        if safe_line not in safe_tail:
+            safe_tail.append(safe_line[:300])
+        if len(safe_tail) == 10:
+            break
+    safe_tail.reverse()
     receipt["failureDiagnostic"] = {
         "schemaVersion": 1,
         "progress": progress,
@@ -189,5 +202,7 @@ if int(build_status) != 0 and build_log_file.is_file():
     }
     if summaries:
         receipt["failureDiagnostic"]["safeSummary"] = summaries
+    if safe_tail:
+        receipt["failureDiagnostic"]["safeTail"] = safe_tail
 Path(output_path).write_text(json.dumps(receipt, indent=2) + "\n", encoding="utf-8")
 PY
