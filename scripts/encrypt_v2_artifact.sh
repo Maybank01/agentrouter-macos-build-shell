@@ -60,9 +60,11 @@ rm -f "$ARCHIVE_PATH"
   "$CARRIER_SHA" \
   "$PLATFORM" \
   "$ARCH" \
-  "$PRIVATE_ROOT/build-phase.json" <<'PY'
+  "$PRIVATE_ROOT/build-phase.json" \
+  "$PRIVATE_ROOT/build.log" <<'PY'
 import hashlib
 import json
+import re
 import sys
 from pathlib import Path
 
@@ -79,6 +81,7 @@ from pathlib import Path
     platform,
     arch,
     phase_path,
+    build_log_path,
 ) = sys.argv[1:]
 path = Path(encrypted_path)
 digest = hashlib.sha256(path.read_bytes()).hexdigest()
@@ -103,5 +106,51 @@ if phase_file.is_file():
         phase = None
     if isinstance(phase, str) and phase.replace("-", "").isalnum() and len(phase) <= 64:
         receipt["lastBuildPhase"] = phase
+
+# Build output is deliberately encrypted with the private evidence archive.
+# Expose only allow-listed, non-secret diagnostic signals so maintainers can
+# distinguish a packaging failure without publishing source paths, signing
+# identities, credentials, or raw logs from the private repository.
+build_log_file = Path(build_log_path)
+if int(build_status) != 0 and build_log_file.is_file():
+    log_bytes = build_log_file.read_bytes()
+    log_text = log_bytes.decode("utf-8", errors="replace")
+    signal_patterns = {
+        "apple-signing": r"(?i)(codesign|code signing|errSecInternalComponent)",
+        "apple-notarization": r"(?i)(notari[sz]|notarytool|stapler)",
+        "apple-credentials": r"(?i)(API key|issuer|authentication credentials).*(invalid|missing|failed|not found)",
+        "certificate-chain": r"(?i)(unable to build chain|certificate chain|CSSMERR_TP_NOT_TRUSTED)",
+        "secure-timestamp": r"(?i)(timestamp service|secure timestamp).*(failed|unavailable|error)",
+        "entitlements": r"(?i)entitlements?.*(invalid|failed|error|malformed)",
+        "invalid-configuration": r"(?i)(InvalidConfigurationError|configuration.*invalid)",
+        "missing-file": r"(?i)(no such file or directory|ENOENT|file not found)",
+        "native-dependency": r"(?i)(node-gyp|prebuild-install|native module).*(failed|error|unsupported)",
+        "disk-space": r"(?i)(no space left|ENOSPC)",
+        "process-killed": r"(?i)(SIGKILL|exit code 137|out of memory|ENOMEM)",
+        "network": r"(?i)(ECONNRESET|ETIMEDOUT|ENETUNREACH|socket hang up)",
+        "electron-builder-exec": r"(?i)(ERR_ELECTRON_BUILDER_CANNOT_EXECUTE|failedTask=build|command failed)",
+    }
+    progress_patterns = (
+        ("dmg", r"(?i)(building\s+target=DMG|target=dmg)"),
+        ("zip", r"(?i)(building\s+target=zip|target=zip)"),
+        ("notarizing", r"(?i)notari[sz]ing"),
+        ("signing", r"(?i)(signing\s+file=|signing.*identity=|codesign)"),
+        ("packaging", r"(?i)packaging\s+platform=darwin"),
+        ("bundle-cli", r"(?i)bundling CLI"),
+        ("renderer-build", r"(?i)(electron-vite|built in)"),
+    )
+    signals = sorted(
+        name for name, pattern in signal_patterns.items() if re.search(pattern, log_text)
+    )
+    progress = next(
+        (name for name, pattern in progress_patterns if re.search(pattern, log_text)),
+        "unknown",
+    )
+    receipt["failureDiagnostic"] = {
+        "schemaVersion": 1,
+        "progress": progress,
+        "signals": signals,
+        "logSha256": hashlib.sha256(log_bytes).hexdigest(),
+    }
 Path(output_path).write_text(json.dumps(receipt, indent=2) + "\n", encoding="utf-8")
 PY
