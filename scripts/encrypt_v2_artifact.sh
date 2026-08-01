@@ -146,11 +146,48 @@ if int(build_status) != 0 and build_log_file.is_file():
         (name for name, pattern in progress_patterns if re.search(pattern, log_text)),
         "unknown",
     )
+    ansi_re = re.compile(r"\x1b\[[0-9;]*[A-Za-z]")
+    sensitive_name_re = re.compile(
+        r"(?i)(password|private[_ -]?key|secret|authorization|bearer)"
+    )
+    error_line_re = re.compile(
+        r"(?i)([⨯✖]|\berror\b|\bfailed\b|\bfailure\b|ERR_[A-Z0-9_]+|exit (?:code|status))"
+    )
+
+    def sanitize_error_line(line: str) -> str | None:
+        value = ansi_re.sub("", line).strip()
+        if not value or sensitive_name_re.search(value):
+            return None
+        value = re.sub(r"https?://\S+", "<url>", value)
+        value = re.sub(r"(?i)(?:[A-Z]:\\|/Users/|/home/|/private/|/tmp/)[^\s\"']+", "<path>", value)
+        value = re.sub(r"[\w.+-]+@[\w.-]+", "<email>", value)
+        value = re.sub(
+            r"(?i)\b(identity|team|issuer|key(?:-?id)?)\s*[=:]\s*[^\s,;]+",
+            r"\1=<redacted>",
+            value,
+        )
+        value = re.sub(r"\b[0-9a-fA-F]{12,}\b", "<id>", value)
+        value = re.sub(r"\b[A-Za-z0-9+/]{48,}={0,2}\b", "<opaque>", value)
+        value = re.sub(r"\s+", " ", value)
+        return value[:500] if value else None
+
+    summaries: list[str] = []
+    for line in reversed(log_text.splitlines()):
+        if not error_line_re.search(line):
+            continue
+        safe_line = sanitize_error_line(line)
+        if safe_line and safe_line not in summaries:
+            summaries.append(safe_line)
+        if len(summaries) == 2:
+            break
+    summaries.reverse()
     receipt["failureDiagnostic"] = {
         "schemaVersion": 1,
         "progress": progress,
         "signals": signals,
         "logSha256": hashlib.sha256(log_bytes).hexdigest(),
     }
+    if summaries:
+        receipt["failureDiagnostic"]["safeSummary"] = summaries
 Path(output_path).write_text(json.dumps(receipt, indent=2) + "\n", encoding="utf-8")
 PY

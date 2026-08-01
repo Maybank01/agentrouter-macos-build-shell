@@ -223,6 +223,14 @@ jobs:
             "${{ needs.preflight.outputs.source_sha }}" \
             "${{ needs.preflight.outputs.client_version }}" \
             "${{ inputs.mode }}" "$BUILD_STATUS" "$GITHUB_RUN_ID" "$GITHUB_SHA" macos "${{ matrix.arch }}"
+      - name: Upload safe macOS diagnostic receipt
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: agentrouter-v2-macos-${{ matrix.arch }}-diagnostic-${{ github.run_id }}
+          if-no-files-found: error
+          retention-days: 1
+          path: public-artifacts/encrypted-artifact-receipt.json
       - name: Upload encrypted macOS evidence
         if: always()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
