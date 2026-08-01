@@ -116,7 +116,7 @@ if int(build_status) != 0 and build_log_file.is_file():
     log_bytes = build_log_file.read_bytes()
     log_text = log_bytes.decode("utf-8", errors="replace")
     signal_patterns = {
-        "apple-signing": r"(?i)(codesign|code signing|errSecInternalComponent)",
+        "apple-signing": r"(?i)(codesign|code signing|Developer ID Application|errSecInternalComponent)",
         "apple-notarization": r"(?i)(notari[sz]|notarytool|stapler)",
         "apple-credentials": r"(?i)(API key|issuer|authentication credentials).*(invalid|missing|failed|not found)",
         "certificate-chain": r"(?i)(unable to build chain|certificate chain|CSSMERR_TP_NOT_TRUSTED)",

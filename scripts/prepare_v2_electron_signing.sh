@@ -37,6 +37,14 @@ if [[ -z "$IDENTITY_LINE" || "$IDENTITY_LINE" != *"($APPLE_TEAM_ID)"* ]]; then
   exit 66
 fi
 CSC_NAME="$(sed -E 's/^[^\"]*\"([^\"]+)\".*$/\1/' <<< "$IDENTITY_LINE")"
+# electron-builder 26 rejects the certificate-class prefix and asks for the
+# subject portion only. codesign accepts the remaining unique subject as a
+# partial identity, so the same value can still drive the timestamped probe.
+CSC_NAME="${CSC_NAME#Developer ID Application: }"
+if [[ -z "$CSC_NAME" || "$CSC_NAME" == "Developer ID Application:"* ]]; then
+  echo "Developer ID Application subject could not be normalized" >&2
+  exit 70
+fi
 
 # Fail in a classified preflight before the private build log is encrypted.
 # These probes never print credentials, certificate subjects, or Apple's
