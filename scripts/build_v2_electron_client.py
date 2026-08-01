@@ -274,16 +274,66 @@ def main() -> int:
             run(["spctl", "--assess", "--type", "execute", "--verbose=4", str(app)], cwd=dist)
             record_phase(output, "macos-app-staple")
             run(["xcrun", "stapler", "validate", "-v", str(app)], cwd=dist)
-            record_phase(output, "macos-dmg-signature")
-            run(["codesign", "--verify", "--verbose=4", str(dmg)], cwd=dist)
-            record_phase(output, "macos-dmg-staple")
-            run(["xcrun", "stapler", "validate", "-v", str(dmg)], cwd=dist)
-            record_phase(output, "macos-dmg-gatekeeper")
-            run(
-                ["spctl", "--assess", "--type", "open", "--context", "context:primary-signature", "--verbose=4", str(dmg)],
-                cwd=dist,
+            # electron-builder deliberately leaves the DMG container itself
+            # unsigned by default. Apple supports distributing a notarized app
+            # inside such a disk image, and electron-builder warns that forcing
+            # DMG-container signing causes unwanted notarization errors. Mount
+            # the actual customer artifact and re-run every trust gate against
+            # the app inside it instead of codesigning the container.
+            dmg_mount = staging / "dmg-mount"
+            dmg_mount.mkdir(parents=True, exist_ok=True)
+            mounted = False
+            try:
+                record_phase(output, "macos-dmg-mount")
+                run(
+                    [
+                        "hdiutil",
+                        "attach",
+                        "-nobrowse",
+                        "-readonly",
+                        "-mountpoint",
+                        str(dmg_mount),
+                        str(dmg),
+                    ],
+                    cwd=dist,
+                )
+                mounted = True
+                packaged_app = find_macos_app(dmg_mount)
+                record_phase(output, "macos-dmg-app-signature")
+                run(
+                    ["codesign", "--verify", "--deep", "--strict", "--verbose=4", str(packaged_app)],
+                    cwd=dist,
+                )
+                record_phase(output, "macos-dmg-app-notarized-requirement")
+                run(
+                    ["codesign", "--test-requirement==notarized", "--verify", "--verbose=4", str(packaged_app)],
+                    cwd=dist,
+                )
+                record_phase(output, "macos-dmg-app-gatekeeper")
+                run(
+                    ["spctl", "--assess", "--type", "execute", "--verbose=4", str(packaged_app)],
+                    cwd=dist,
+                )
+                record_phase(output, "macos-dmg-app-staple")
+                run(["xcrun", "stapler", "validate", "-v", str(packaged_app)], cwd=dist)
+            finally:
+                if mounted:
+                    subprocess.run(
+                        ["hdiutil", "detach", str(dmg_mount)],
+                        cwd=dist,
+                        check=False,
+                        stdout=subprocess.DEVNULL,
+                        stderr=subprocess.DEVNULL,
+                    )
+            gates.update(
+                {
+                    "developerIdSigned": True,
+                    "notarized": True,
+                    "gatekeeper": True,
+                    "stapled": True,
+                    "dmgContainsVerifiedApp": True,
+                }
             )
-            gates.update({"developerIdSigned": True, "notarized": True, "gatekeeper": True, "stapled": True})
         else:
             gates.update({"developerIdSigned": False, "notarized": False, "internalOnly": True})
         record_phase(output, "macos-artifact-copy")
