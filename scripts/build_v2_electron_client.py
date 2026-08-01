@@ -67,6 +67,13 @@ def copy_artifact(source: Path, output: Path) -> dict[str, object]:
     }
 
 
+def record_phase(output: Path, phase: str) -> None:
+    (output / "build-phase.json").write_text(
+        json.dumps({"phase": phase}, separators=(",", ":")) + "\n",
+        encoding="utf-8",
+    )
+
+
 def locate_asar_command(workspace: Path) -> Path:
     suffix = ".cmd" if os.name == "nt" else ""
     command = workspace / "node_modules" / ".bin" / f"asar{suffix}"
@@ -131,6 +138,7 @@ def main() -> int:
         )
 
     output.mkdir(parents=True, exist_ok=True)
+    record_phase(output, "initializing")
     staging = output / ".staging"
     staging.mkdir(parents=True, exist_ok=True)
     cli_name = "multica.exe" if args.platform == "windows" else "multica"
@@ -140,9 +148,11 @@ def main() -> int:
     built_at = datetime.now(timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z")
     ldflags = f"-X main.version={args.version} -X main.commit={args.source_sha[:12]} -X main.date={built_at}"
 
+    record_phase(output, "gateproxy-test")
     run(["go", "test", "./internal/gateproxy"], cwd=server, env=os.environ.copy())
     env = os.environ.copy()
     env.update({"CGO_ENABLED": "0", "GOOS": goos, "GOARCH": goarch})
+    record_phase(output, "daemon-build")
     run(
         [
             "go",
@@ -160,6 +170,7 @@ def main() -> int:
         env=env,
     )
 
+    record_phase(output, "dependency-install")
     pnpm = command("pnpm")
     run([pnpm, "install", "--frozen-lockfile"], cwd=workspace)
     package_env = os.environ.copy()
@@ -176,6 +187,7 @@ def main() -> int:
             raise RuntimeError(f"production macOS signing environment is incomplete: {', '.join(missing)}")
 
     platform_flag = "--win" if args.platform == "windows" else "--mac"
+    record_phase(output, "desktop-package")
     run(
         [
             pnpm,
@@ -202,6 +214,7 @@ def main() -> int:
     }
 
     if args.platform == "windows":
+        record_phase(output, "windows-artifact-guard")
         installer = dist / f"agentrouter-desktop-{args.version}-windows-x64.exe"
         blockmap = dist / f"{installer.name}.blockmap"
         update_manifest = dist / "latest.yml"
@@ -234,6 +247,7 @@ def main() -> int:
             artifacts.append(copy_artifact(path, output))
         gates.update({"artifactGuard": True, "differentialBlockmap": True})
     else:
+        record_phase(output, "macos-artifact-discovery")
         normalized_arch = "x86_64" if args.arch == "x64" else "arm64"
         dmg = dist / f"agentrouter-desktop-{args.version}-mac-{args.arch}.dmg"
         zip_path = dist / f"agentrouter-desktop-{args.version}-mac-{args.arch}.zip"
@@ -243,18 +257,28 @@ def main() -> int:
         info = plistlib.loads((app / "Contents" / "Info.plist").read_bytes())
         executable = app / "Contents" / "MacOS" / str(info["CFBundleExecutable"])
         bundled_cli = app / "Contents" / "Resources" / "bin" / "multica"
+        record_phase(output, "macos-main-architecture")
         if verify_arch(executable, args.arch) != normalized_arch:
             raise RuntimeError("main executable architecture verification failed")
+        record_phase(output, "macos-daemon-architecture")
         if verify_arch(bundled_cli, args.arch) != normalized_arch:
             raise RuntimeError("bundled CLI architecture verification failed")
+        record_phase(output, "macos-dmg-integrity")
         run(["hdiutil", "verify", str(dmg)], cwd=dist)
         if args.mode == "production-release":
+            record_phase(output, "macos-app-signature")
             run(["codesign", "--verify", "--deep", "--strict", "--verbose=4", str(app)], cwd=dist)
+            record_phase(output, "macos-app-notarized-requirement")
             run(["codesign", "--test-requirement==notarized", "--verify", "--verbose=4", str(app)], cwd=dist)
+            record_phase(output, "macos-app-gatekeeper")
             run(["spctl", "--assess", "--type", "execute", "--verbose=4", str(app)], cwd=dist)
+            record_phase(output, "macos-app-staple")
             run(["xcrun", "stapler", "validate", "-v", str(app)], cwd=dist)
+            record_phase(output, "macos-dmg-signature")
             run(["codesign", "--verify", "--verbose=4", str(dmg)], cwd=dist)
+            record_phase(output, "macos-dmg-staple")
             run(["xcrun", "stapler", "validate", "-v", str(dmg)], cwd=dist)
+            record_phase(output, "macos-dmg-gatekeeper")
             run(
                 ["spctl", "--assess", "--type", "open", "--context", "context:primary-signature", "--verbose=4", str(dmg)],
                 cwd=dist,
@@ -262,6 +286,7 @@ def main() -> int:
             gates.update({"developerIdSigned": True, "notarized": True, "gatekeeper": True, "stapled": True})
         else:
             gates.update({"developerIdSigned": False, "notarized": False, "internalOnly": True})
+        record_phase(output, "macos-artifact-copy")
         for path in (dmg, zip_path, update_manifest):
             artifacts.append(copy_artifact(path, output))
         for optional in sorted(dist.glob(f"agentrouter-desktop-{args.version}-mac-{args.arch}.*.blockmap")):
@@ -288,6 +313,7 @@ def main() -> int:
         json.dumps(receipt, ensure_ascii=False, indent=2) + "\n", encoding="utf-8"
     )
     shutil.rmtree(staging)
+    record_phase(output, "completed")
     print(f"V0.2 Electron build verified: {args.platform}/{args.arch} {args.version}")
     return 0
 

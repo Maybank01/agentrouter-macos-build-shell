@@ -59,7 +59,8 @@ rm -f "$ARCHIVE_PATH"
   "$RUN_ID" \
   "$CARRIER_SHA" \
   "$PLATFORM" \
-  "$ARCH" <<'PY'
+  "$ARCH" \
+  "$PRIVATE_ROOT/build-phase.json" <<'PY'
 import hashlib
 import json
 import sys
@@ -77,6 +78,7 @@ from pathlib import Path
     carrier_sha,
     platform,
     arch,
+    phase_path,
 ) = sys.argv[1:]
 path = Path(encrypted_path)
 digest = hashlib.sha256(path.read_bytes()).hexdigest()
@@ -93,5 +95,13 @@ receipt = {
     "encryption": "openssl-aes-256-cbc-pbkdf2-sha256-iter200000",
     "artifact": {"name": artifact_name, "sha256": digest, "size": path.stat().st_size},
 }
+phase_file = Path(phase_path)
+if phase_file.is_file():
+    try:
+        phase = json.loads(phase_file.read_text(encoding="utf-8")).get("phase")
+    except (OSError, json.JSONDecodeError):
+        phase = None
+    if isinstance(phase, str) and phase.replace("-", "").isalnum() and len(phase) <= 64:
+        receipt["lastBuildPhase"] = phase
 Path(output_path).write_text(json.dumps(receipt, indent=2) + "\n", encoding="utf-8")
 PY
