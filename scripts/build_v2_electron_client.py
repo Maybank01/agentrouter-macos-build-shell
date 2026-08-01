@@ -26,6 +26,15 @@ SHA_RE = re.compile(r"^[0-9a-f]{40}$")
 VERSION_RE = re.compile(r"^[0-9]+\.[0-9]+\.[0-9]+$")
 
 
+def command(name: str) -> str:
+    """Resolve npm-installed command shims on Windows without shell=True."""
+    candidate = f"{name}.cmd" if os.name == "nt" else name
+    resolved = shutil.which(candidate)
+    if not resolved:
+        raise RuntimeError(f"required command is unavailable: {candidate}")
+    return resolved
+
+
 def run(args: list[str], *, cwd: Path, env: dict[str, str] | None = None, capture: bool = False) -> str:
     completed = subprocess.run(
         args,
@@ -151,7 +160,8 @@ def main() -> int:
         env=env,
     )
 
-    run(["pnpm", "install", "--frozen-lockfile"], cwd=workspace)
+    pnpm = command("pnpm")
+    run([pnpm, "install", "--frozen-lockfile"], cwd=workspace)
     package_env = os.environ.copy()
     package_env["AGENTROUTER_BUILD_VERSION"] = args.version
     package_env["AGENTROUTER_MULTICA_CLI_BINARY"] = str(cli)
@@ -168,7 +178,7 @@ def main() -> int:
     platform_flag = "--win" if args.platform == "windows" else "--mac"
     run(
         [
-            "pnpm",
+            pnpm,
             "--filter",
             "agentrouter-desktop",
             "package",
