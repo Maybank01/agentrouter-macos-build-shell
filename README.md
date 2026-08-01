@@ -1,5 +1,15 @@
 # AgentRouter macOS Build Shell
 
+## V0.2 Electron carrier
+
+`build-v2-electron-client.yml` is the current manual carrier for exact-SHA
+Windows x64 and macOS arm64/x64 Electron package probes.  It never publishes a
+release and uploads encrypted evidence only.  See
+`docs/v2-electron-carrier-contract.md`.
+
+The older `build-private-client.yml` workflow remains a V0.1 Tauri historical
+carrier and must not be used for a V0.2 build.
+
 This repository is a public CI carrier. It contains no AgentRouter Client product source, signing material, Codex Runtime, or decrypted release artifacts.
 
 The manually dispatched workflow checks out one immutable commit from the private Client repository with a read-only deploy key and offers two explicit channels:

@@ -1,0 +1,222 @@
+name: Build private AgentRouter V0.2 Electron clients
+
+on:
+  workflow_dispatch:
+    inputs:
+      mode:
+        description: Build mode
+        required: true
+        type: choice
+        default: unsigned-probe
+        options:
+          - unsigned-probe
+          - production-release
+      source_sha:
+        description: Exact 40-character commit from the private V0.2 Client repository
+        required: true
+        type: string
+      client_version:
+        description: Expected V0.2 Client version
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: v2-electron-${{ inputs.mode }}-${{ inputs.source_sha }}
+  cancel-in-progress: false
+
+jobs:
+  preflight:
+    name: Validate exact V0.2 source request
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    outputs:
+      source_sha: ${{ steps.validate.outputs.source_sha }}
+      client_version: ${{ steps.validate.outputs.client_version }}
+    steps:
+      - name: Checkout immutable carrier
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+      - name: Validate request and carrier identity
+        id: validate
+        shell: bash
+        env:
+          SOURCE_SHA: ${{ inputs.source_sha }}
+          CLIENT_VERSION: ${{ inputs.client_version }}
+        run: |
+          set -euo pipefail
+          [[ "$SOURCE_SHA" =~ ^[0-9a-f]{40}$ ]]
+          [[ "$CLIENT_VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]
+          test "$GITHUB_REPOSITORY" = "Maybank01/agentrouter-macos-build-shell"
+          test "$(git rev-parse HEAD)" = "$GITHUB_SHA"
+          echo "source_sha=$SOURCE_SHA" >> "$GITHUB_OUTPUT"
+          echo "client_version=$CLIENT_VERSION" >> "$GITHUB_OUTPUT"
+
+  windows:
+    name: Windows x64 / ${{ inputs.mode }}
+    needs: preflight
+    runs-on: windows-latest
+    timeout-minutes: 120
+    env:
+      SOURCE_PATH: private-client
+      PRIVATE_OUTPUT_ROOT: artifacts/private
+      PUBLIC_OUTPUT_ROOT: public-artifacts
+    steps:
+      - name: Checkout immutable carrier
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+      - name: Checkout exact private V0.2 source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          repository: Maybank01/agentrouter-client-packaging
+          ref: ${{ needs.preflight.outputs.source_sha }}
+          path: private-client
+          ssh-key: ${{ secrets.PRIVATE_SOURCE_SSH_KEY }}
+          persist-credentials: false
+          fetch-depth: 1
+      - name: Remove private source remote
+        shell: pwsh
+        run: git -C "$env:SOURCE_PATH" remote set-url origin disabled-private-origin
+      - name: Setup Node
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
+        with:
+          node-version: "24"
+      - name: Setup Go
+        uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6
+        with:
+          go-version-file: private-client/product/agentrouter-v2/server/go.mod
+          cache-dependency-path: private-client/product/agentrouter-v2/server/go.sum
+      - name: Install pinned pnpm
+        run: npm install --global pnpm@10.28.2
+      - name: Build and guard private Windows package
+        id: build
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force $env:PRIVATE_OUTPUT_ROOT | Out-Null
+          python scripts/build_v2_electron_client.py `
+            --source-root $env:SOURCE_PATH `
+            --output-root $env:PRIVATE_OUTPUT_ROOT `
+            --source-sha "${{ needs.preflight.outputs.source_sha }}" `
+            --version "${{ needs.preflight.outputs.client_version }}" `
+            --platform windows `
+            --arch x64 `
+            --mode "${{ inputs.mode }}" `
+            --carrier-sha "$env:GITHUB_SHA" *> "$env:PRIVATE_OUTPUT_ROOT/build.log"
+      - name: Encrypt Windows evidence
+        if: always()
+        shell: bash
+        env:
+          ARTIFACT_ENCRYPTION_KEY: ${{ secrets.ARTIFACT_ENCRYPTION_KEY }}
+          BUILD_STATUS: ${{ steps.build.outcome == 'success' && '0' || '1' }}
+        run: |
+          bash scripts/encrypt_v2_artifact.sh \
+            "$PRIVATE_OUTPUT_ROOT" "$PUBLIC_OUTPUT_ROOT" \
+            "${{ needs.preflight.outputs.source_sha }}" \
+            "${{ needs.preflight.outputs.client_version }}" \
+            "${{ inputs.mode }}" "$BUILD_STATUS" "$GITHUB_RUN_ID" "$GITHUB_SHA" windows x64
+      - name: Upload encrypted Windows evidence
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: agentrouter-v2-windows-x64-${{ inputs.mode }}-${{ github.run_id }}
+          if-no-files-found: error
+          retention-days: 1
+          path: public-artifacts/
+
+  macos:
+    name: macOS ${{ matrix.arch }} / ${{ inputs.mode }}
+    needs: preflight
+    strategy:
+      fail-fast: false
+      matrix:
+        arch: [arm64, x64]
+    runs-on: macos-14
+    timeout-minutes: 120
+    environment:
+      name: ${{ inputs.mode == 'production-release' && 'production-signing' || 'unsigned-probe' }}
+    env:
+      SOURCE_PATH: private-client
+      PRIVATE_OUTPUT_ROOT: artifacts/private
+      PUBLIC_OUTPUT_ROOT: public-artifacts
+    steps:
+      - name: Checkout immutable carrier
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+      - name: Checkout exact private V0.2 source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          repository: Maybank01/agentrouter-client-packaging
+          ref: ${{ needs.preflight.outputs.source_sha }}
+          path: private-client
+          ssh-key: ${{ secrets.PRIVATE_SOURCE_SSH_KEY }}
+          persist-credentials: false
+          fetch-depth: 1
+      - name: Remove private source remote
+        shell: bash
+        run: git -C "$SOURCE_PATH" remote set-url origin disabled-private-origin
+      - name: Setup Node
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
+        with:
+          node-version: "24"
+      - name: Setup Go
+        uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6
+        with:
+          go-version-file: private-client/product/agentrouter-v2/server/go.mod
+          cache-dependency-path: private-client/product/agentrouter-v2/server/go.sum
+      - name: Install pinned pnpm
+        run: npm install --global pnpm@10.28.2
+      - name: Prepare Developer ID signing and notarization
+        if: ${{ inputs.mode == 'production-release' }}
+        shell: bash
+        env:
+          APPLE_CERTIFICATE_BASE64: ${{ secrets.APPLE_CERTIFICATE }}
+          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+          APPLE_API_PRIVATE_KEY_BASE64: ${{ secrets.APPLE_API_KEY }}
+          APPLE_API_KEY_ID: ${{ secrets.APPLE_API_KEY_ID }}
+          APPLE_API_ISSUER: ${{ secrets.APPLE_API_ISSUER }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+        run: bash scripts/prepare_v2_electron_signing.sh
+      - name: Build and guard private macOS package
+        id: build
+        shell: bash
+        run: |
+          set -o pipefail
+          mkdir -p "$PRIVATE_OUTPUT_ROOT"
+          python3 scripts/build_v2_electron_client.py \
+            --source-root "$SOURCE_PATH" \
+            --output-root "$PRIVATE_OUTPUT_ROOT" \
+            --source-sha "${{ needs.preflight.outputs.source_sha }}" \
+            --version "${{ needs.preflight.outputs.client_version }}" \
+            --platform macos \
+            --arch "${{ matrix.arch }}" \
+            --mode "${{ inputs.mode }}" \
+            --carrier-sha "$GITHUB_SHA" > "$PRIVATE_OUTPUT_ROOT/build.log" 2>&1
+      - name: Remove temporary Apple signing material
+        if: ${{ always() && inputs.mode == 'production-release' }}
+        shell: bash
+        run: bash scripts/cleanup_v2_electron_signing.sh
+      - name: Encrypt macOS evidence
+        if: always()
+        shell: bash
+        env:
+          ARTIFACT_ENCRYPTION_KEY: ${{ secrets.ARTIFACT_ENCRYPTION_KEY }}
+          BUILD_STATUS: ${{ steps.build.outcome == 'success' && '0' || '1' }}
+        run: |
+          bash scripts/encrypt_v2_artifact.sh \
+            "$PRIVATE_OUTPUT_ROOT" "$PUBLIC_OUTPUT_ROOT" \
+            "${{ needs.preflight.outputs.source_sha }}" \
+            "${{ needs.preflight.outputs.client_version }}" \
+            "${{ inputs.mode }}" "$BUILD_STATUS" "$GITHUB_RUN_ID" "$GITHUB_SHA" macos "${{ matrix.arch }}"
+      - name: Upload encrypted macOS evidence
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: agentrouter-v2-macos-${{ matrix.arch }}-${{ inputs.mode }}-${{ github.run_id }}
+          if-no-files-found: error
+          retention-days: 1
+          path: public-artifacts/
