@@ -38,6 +38,33 @@ if [[ -z "$IDENTITY_LINE" || "$IDENTITY_LINE" != *"($APPLE_TEAM_ID)"* ]]; then
 fi
 CSC_NAME="$(sed -E 's/^[^\"]*\"([^\"]+)\".*$/\1/' <<< "$IDENTITY_LINE")"
 
+# Fail in a classified preflight before the private build log is encrypted.
+# These probes never print credentials, certificate subjects, or Apple's
+# response body; they only prove that the imported identity can sign with a
+# secure timestamp and that the App Store Connect key can authenticate.
+SIGNING_PROBE="$RUNNER_TEMP/agentrouter-v2-signing-probe"
+cp /usr/bin/true "$SIGNING_PROBE"
+if ! codesign --force --options runtime --timestamp --sign "$CSC_NAME" "$SIGNING_PROBE" >/dev/null 2>&1; then
+  rm -f "$SIGNING_PROBE"
+  echo "Developer ID signing probe failed" >&2
+  exit 67
+fi
+if ! codesign --verify --strict "$SIGNING_PROBE" >/dev/null 2>&1; then
+  rm -f "$SIGNING_PROBE"
+  echo "Developer ID verification probe failed" >&2
+  exit 68
+fi
+rm -f "$SIGNING_PROBE"
+
+if ! xcrun notarytool history \
+  --key "$API_KEY_PATH" \
+  --key-id "$APPLE_API_KEY_ID" \
+  --issuer "$APPLE_API_ISSUER" \
+  --output-format json >/dev/null 2>&1; then
+  echo "Apple notarization credential probe failed" >&2
+  exit 69
+fi
+
 {
   echo "CSC_NAME=$CSC_NAME"
   echo "APPLE_API_KEY=$API_KEY_PATH"
